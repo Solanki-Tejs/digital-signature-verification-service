@@ -1,5 +1,3 @@
-
-
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -13,7 +11,6 @@ def root():
 
 
 
-# DB dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -22,8 +19,44 @@ def get_db():
         db.close()
 
 
+
 @app.post("/login")
 def login(email: str, password: str, db: Session = Depends(get_db)):
+
+    count_query = text("SELECT COUNT(*) FROM employee")
+    user_count = db.execute(count_query).scalar()
+
+    if user_count == 0:
+        if email == "admin" and password == "admin":
+            create_admin_query = text("""
+                INSERT INTO employee (full_name, email, password_hash, role)
+                VALUES (:name, :email, :password, :role)
+                RETURNING employee_id, full_name, role
+            """)
+            result = db.execute(
+                create_admin_query,
+                {
+                    "name": "System Admin",
+                    "email": "admin",
+                    "password": "admin", 
+                    "role": "admin"
+                }
+            ).mappings().first()
+
+            db.commit()
+
+            return {
+                "message": "Initial admin created",
+                "employee_id": result["employee_id"],
+                "full_name": result["full_name"],
+                "role": result["role"]
+            }
+
+        raise HTTPException(
+            status_code=401,
+            detail="System not initialized. Use default admin credentials."
+        )
+
     query = text("""
         SELECT employee_id, full_name, email, password_hash, role
         FROM employee
@@ -32,15 +65,9 @@ def login(email: str, password: str, db: Session = Depends(get_db)):
 
     result = db.execute(query, {"email": email}).mappings().first()
 
-    # user not found
-    if not result:
+    if not result or result["password_hash"] != password:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    # password check (PLAIN for now)
-    if result["password_hash"] != password:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    # success
     return {
         "message": "Login successful",
         "employee_id": result["employee_id"],
@@ -48,6 +75,45 @@ def login(email: str, password: str, db: Session = Depends(get_db)):
         "role": result["role"]
     }
 
+
+@app.post("/update_details")
+def update_details(
+    name: str,
+    email: str,
+    password: str,
+    db: Session = Depends(get_db)
+):
+    query = text("""
+        UPDATE employee
+        SET name = :name
+            ,email = :email,
+            password_hash = :password
+        WHERE email = 'admin'
+          AND password_hash = 'admin'
+        RETURNING employee_id, role
+    """)
+
+    result = db.execute(
+        query,
+        {   "name": name,
+            "email": email,
+            "password": password 
+        }
+    ).mappings().first()
+
+    if not result:
+        raise HTTPException(
+            status_code=400,
+            detail="Admin update not allowed or already completed"
+        )
+
+    db.commit()
+
+    return {
+        "message": "Admin credentials updated successfully",
+        "employee_id": result["employee_id"],
+        "role": result["role"]
+    }
 
 
 @app.post("/employee")

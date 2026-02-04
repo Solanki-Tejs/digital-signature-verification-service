@@ -1,9 +1,23 @@
 from fastapi import FastAPI, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from utils.database import SessionLocal
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"], 
+    allow_credentials=True,
+    allow_methods=["*"], 
+    allow_headers=["*"],
+)
+
+class LoginSchema(BaseModel):
+    email: str
+    password: str
 
 @app.get("/")
 def root():
@@ -21,7 +35,12 @@ def get_db():
 
 
 @app.post("/login")
-def login(email: str, password: str, db: Session = Depends(get_db)):
+def login(data: LoginSchema, db: Session = Depends(get_db)):
+    email = data.email
+    password = data.password
+    
+    print("Login attempt for:", email)
+    print("password:", password)
 
     count_query = text("SELECT COUNT(*) FROM employee")
     user_count = db.execute(count_query).scalar()
@@ -66,7 +85,7 @@ def login(email: str, password: str, db: Session = Depends(get_db)):
     result = db.execute(query, {"email": email}).mappings().first()
 
     if not result or result["password_hash"] != password:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(status_code=400, detail="Invalid email or password")
 
     return {
         "message": "Login successful",

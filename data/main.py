@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from utils.database import SessionLocal
 from fastapi.middleware.cors import CORSMiddleware
-
+from utils.hash_password import *
 app = FastAPI()
 
 app.add_middleware(
@@ -18,6 +18,17 @@ app.add_middleware(
 class LoginSchema(BaseModel):
     email: str
     password: str
+
+class UpdateUserSchema(BaseModel):
+    name: str
+    email: str
+    password: str
+
+class NewUserSchema(BaseModel):
+    full_name: str
+    email: str
+    password: str
+    role: str
 
 @app.get("/")
 def root():
@@ -83,8 +94,8 @@ def login(data: LoginSchema, db: Session = Depends(get_db)):
     """)
 
     result = db.execute(query, {"email": email}).mappings().first()
-
-    if not result or result["password_hash"] != password:
+    verify=verify_password(password,result["password_hash"])
+    if verify == False:
         raise HTTPException(status_code=400, detail="Invalid email or password")
 
     return {
@@ -97,14 +108,15 @@ def login(data: LoginSchema, db: Session = Depends(get_db)):
 
 @app.post("/update_details")
 def update_details(
-    name: str,
-    email: str,
-    password: str,
+    data:UpdateUserSchema,
     db: Session = Depends(get_db)
 ):
+    name = data.name
+    email = data.email
+    password = data.password
     query = text("""
         UPDATE employee
-        SET name = :name
+        SET full_name = :name
             ,email = :email,
             password_hash = :password
         WHERE email = 'admin'
@@ -116,7 +128,7 @@ def update_details(
         query,
         {   "name": name,
             "email": email,
-            "password": password 
+            "password": create_password_hash(password) 
         }
     ).mappings().first()
 
@@ -135,14 +147,15 @@ def update_details(
     }
 
 
-@app.post("/employee")
+@app.post("/create_employee")
 def create_employee(
-    full_name: str,
-    email: str,
-    password_hash: str,
-    role: str,
+    data:NewUserSchema,
     db: Session = Depends(get_db)
 ):
+    full_name = data.full_name
+    email = data.email
+    password = data.password
+    role = data.role
     query = text("""
         INSERT INTO employee (full_name, email, password_hash, role)
         VALUES (:full_name, :email, :password_hash, :role)
@@ -153,7 +166,7 @@ def create_employee(
         result = db.execute(query, {
             "full_name": full_name,
             "email": email,
-            "password_hash": password_hash,
+            "password_hash": create_password_hash(password),
             "role": role
         })
         db.commit()

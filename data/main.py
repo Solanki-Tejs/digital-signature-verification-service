@@ -1,10 +1,12 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Response, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from utils.jwt_token import create_access_token, decode_access_token
 from utils.database import SessionLocal
 from fastapi.middleware.cors import CORSMiddleware
 from utils.hash_password import *
+
 app = FastAPI()
 
 app.add_middleware(
@@ -14,6 +16,8 @@ app.add_middleware(
     allow_methods=["*"], 
     allow_headers=["*"],
 )
+
+# ========================= SCHEMA HERE =========================
 
 class LoginSchema(BaseModel):
     email: str
@@ -29,24 +33,58 @@ class NewUserSchema(BaseModel):
     email: str
     password: str
     role: str
-
-@app.get("/")
-def root():
-    return {"message": "Hello world!"}
-
-
+    
+# ========================= LOGIC HERE =========================
 
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
-        db.close()
+        db.close()        
+        
+def get_current_user(request: Request):
+    token = request.cookies.get("access_token")
+    print("Token from cookie:", token)
 
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
+    try:
+        payload = decode_access_token(token)
+        return payload
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
+def admin_required(user=Depends(get_current_user)):
+    if user.get("role") != "ADMIN":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+def role_required(allowed_roles: list):
+    def checker(user=Depends(get_current_user)):
+        print(user)
+        if user.get("role") not in allowed_roles:
+            print("error here")
+            raise HTTPException(status_code=403, detail="Not authorized")
+        return user
+    return checker
+
+# ========================= ROUTES HERE =========================
+
+@app.get("/")
+def root():
+    return {"message": "Hello world!"}
+
+@app.get("/me")
+def get_current_user_me(user=Depends(get_current_user)):
+    # print(user)
+    return {
+        "isAuth" : True
+    }
 
 @app.post("/login")
-def login(data: LoginSchema, db: Session = Depends(get_db)):
+def login(data: LoginSchema, db: Session = Depends(get_db), response: Response = None):
     email = data.email
     password = data.password
     
@@ -97,6 +135,16 @@ def login(data: LoginSchema, db: Session = Depends(get_db)):
     verify=verify_password(password,result["password_hash"])
     if verify == False:
         raise HTTPException(status_code=400, detail="Invalid email or password")
+
+    token = create_access_token(data={"email": email, "role": result["role"]})
+    
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,   # JS CANNOT read it
+        samesite="Lax",
+        secure=False     # True in production (HTTPS)
+    )
 
     return {
         "message": "Login successful",
@@ -150,6 +198,7 @@ def update_details(
 @app.post("/create_employee")
 def create_employee(
     data:NewUserSchema,
+    user=Depends(role_required(["admin"])),
     db: Session = Depends(get_db)
 ):
     full_name = data.full_name
@@ -181,3 +230,12 @@ def get_employees(db: Session = Depends(get_db)):
     query = text("SELECT * FROM employee")
     result = db.execute(query).mappings().all()
     return result
+
+@app.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(
+        key="access_token",
+        httponly=True,
+        samesite="Lax"
+    )
+    return {"message": "Logged out successfully"}

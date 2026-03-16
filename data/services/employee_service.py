@@ -1,3 +1,5 @@
+from urllib import response
+
 from sqlalchemy import text
 from fastapi import HTTPException
 from utils.hash_password import create_password_hash, verify_password
@@ -9,25 +11,55 @@ def login_service(data, db):
     email = data.email
     password = data.password
 
+    
+    print("Login attempt for:", email)
+    print("password:", password)
+
+    count_query = text("SELECT COUNT(*) FROM employee")
+    user_count = db.execute(count_query).scalar()
+
+    if user_count == 0:
+        if email == "admin" and password == "admin":
+            create_admin_query = text("""
+                INSERT INTO employee (full_name, email, password_hash, role)
+                VALUES (:name, :email, :password, :role)
+                RETURNING employee_id, full_name, role
+            """)
+            result = db.execute(
+                create_admin_query,
+                {
+                    "name": "System Admin",
+                    "email": "admin",
+                    "password": create_password_hash("admin"),
+                    "role": "admin"
+                }
+            ).mappings().first()
+
+            db.commit()
+
+            token = create_access_token(data={"email": email, "role": result["role"]})
+            msg="Initial admin created"
+            return token,result,msg
+
+        raise HTTPException(
+            status_code=401,
+            detail="System not initialized. Use default admin credentials."
+        )
+
     query = text("""
         SELECT employee_id, full_name, email, password_hash, role
         FROM employee
         WHERE email = :email
     """)
-
+    msg="Login successful"
     result = db.execute(query, {"email": email}).mappings().first()
-
-    if not result:
-        raise HTTPException(status_code=400, detail="Invalid email or password")
-
-    verify = verify_password(password, result["password_hash"])
-
-    if not verify:
+    verify=verify_password(password,result["password_hash"])
+    if verify == False:
         raise HTTPException(status_code=400, detail="Invalid email or password")
 
     token = create_access_token(data={"email": email, "role": result["role"]})
-
-    return token, result
+    
+    return token,result,msg
 
 
 def update_user_service(data, db):

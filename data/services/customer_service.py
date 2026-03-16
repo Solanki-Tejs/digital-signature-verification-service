@@ -238,3 +238,69 @@ def enroll_customer_service(data, images, db):
 #     initial_signature_path VARCHAR(500),
 #     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 # );
+
+
+
+from fastapi import HTTPException
+from sklearn.metrics.pairwise import cosine_similarity
+
+
+THRESHOLD = 0.75   # adjust later after testing
+
+
+def verify_customer_signature(reference_id, image, db):
+
+    # -------------------------------
+    # GET EMBEDDING FROM DATABASE
+    # -------------------------------
+
+    result = db.execute(text("""
+        SELECT avg_embedding
+        FROM customer_signature
+        WHERE reference_id = :rid
+    """), {
+        "rid": reference_id
+    }).fetchone()
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    reference_embedding = np.frombuffer(result.avg_embedding, dtype="float32")
+
+    # -------------------------------
+    # SAVE TEMP IMAGE
+    # -------------------------------
+
+    temp_id = str(uuid.uuid4())
+    temp_path = os.path.join(TEMP_DIR, f"{temp_id}.png")
+
+    with open(temp_path, "wb") as buffer:
+        shutil.copyfileobj(image.file, buffer)
+
+    # -------------------------------
+    # COMPUTE TEST EMBEDDING
+    # -------------------------------
+
+    img_tensor = load_image(temp_path)
+
+    with torch.no_grad():
+        test_embedding = model(img_tensor)
+
+    test_embedding = test_embedding.cpu().numpy().flatten()
+
+    # -------------------------------
+    # COSINE SIMILARITY
+    # -------------------------------
+
+    score = cosine_similarity(
+        reference_embedding.reshape(1, -1),
+        test_embedding.reshape(1, -1)
+    ).item()
+
+    os.remove(temp_path)
+
+    return {
+        "reference_id": reference_id,
+        "match": bool(score > THRESHOLD),
+        "similarity_score": round(float(score), 4)
+    }

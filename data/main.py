@@ -41,7 +41,7 @@ def get_me(user=Depends(get_current_user)):
 @app.post("/login")
 def login(data: LoginSchema, response: Response, db: Session = Depends(get_db)):
 
-    token, result = login_service(data, db)
+    token, result,msg = login_service(data, db)
 
     response.set_cookie(
         key="access_token",
@@ -52,7 +52,7 @@ def login(data: LoginSchema, response: Response, db: Session = Depends(get_db)):
     )
 
     return {
-        "message": "Login successful",
+        "message": msg,
         "employee_id": result["employee_id"],
         "full_name": result["full_name"],
         "role": result["role"]
@@ -100,14 +100,29 @@ from typing import List
 from fastapi import Form
 @app.post("/enroll_customer")
 def enroll_customer(
-    empID: int = Form(...),
     DOB: date = Form(...),
     fullName: str = Form(...),
     email: str = Form(...),
     images: List[UploadFile] = File(...),
+    user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    
+
+    employee_email = user["email"]
+
+    query = text("""
+        SELECT employee_id
+        FROM employee
+        WHERE email = :email
+    """)
+
+    result = db.execute(query, {"email": employee_email}).fetchone()
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    empID = result[0]
+
     data = enrollSchema(
         empID=empID,
         DOB=DOB,
@@ -117,14 +132,16 @@ def enroll_customer(
 
     return enroll_customer_service(data, images, db)
 
-
-@app.post("/test_verify")
-def test_verify(
-    reference_images: List[UploadFile] = File(...),
-    test_image: UploadFile = File(...)
+@app.post("/verify-signature")
+async def verify_signature(
+    reference_id: int = Form(...),
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db)
 ):
+    
+    result = verify_customer_signature(reference_id, image, db)
 
-    return verify_test_service(reference_images, test_image)
+    return result
 
 
 @app.post("/logout")

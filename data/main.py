@@ -1,149 +1,54 @@
-from fastapi import FastAPI, Depends, HTTPException, Response, Request
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from utils.jwt_token import create_access_token, decode_access_token
-from utils.database import SessionLocal
+from fastapi import FastAPI, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
-from utils.hash_password import *
+from sqlalchemy.orm import Session
+
+from utils.database import SessionLocal
+from schemas.employee_schema import *
+from schemas.customer_schema import *
+from services.employee_service import *
+from services.customer_service import *
+from dependencies.auth_dependencies import role_required, get_current_user
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"], 
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
-    allow_methods=["*"], 
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ========================= SCHEMA HERE =========================
-
-class LoginSchema(BaseModel):
-    email: str
-    password: str
-
-class UpdateUserSchema(BaseModel):
-    name: str
-    email: str
-    password: str
-
-class NewUserSchema(BaseModel):
-    full_name: str
-    email: str
-    password: str
-    role: str
-    
-# ========================= LOGIC HERE =========================
 
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
-        db.close()        
-        
-def get_current_user(request: Request):
-    token = request.cookies.get("access_token")
-    print("Token from cookie:", token)
+        db.close()
 
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    try:
-        payload = decode_access_token(token)
-        return payload
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    
-def admin_required(user=Depends(get_current_user)):
-    if user.get("role") != "ADMIN":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return user
-
-def role_required(allowed_roles: list):
-    def checker(user=Depends(get_current_user)):
-        print(user)
-        if user.get("role") not in allowed_roles:
-            print("error here")
-            raise HTTPException(status_code=403, detail="Not authorized")
-        return user
-    return checker
-
-# ========================= ROUTES HERE =========================
 
 @app.get("/")
 def root():
     return {"message": "Hello world!"}
 
+
 @app.get("/me")
-def get_current_user_me(user=Depends(get_current_user)):
-    # print(user)
-    return {
-        "isAuth" : True
-    }
+def get_me(user=Depends(get_current_user)):
+    return {"isAuth": True}
+
 
 @app.post("/login")
-def login(data: LoginSchema, db: Session = Depends(get_db), response: Response = None):
-    email = data.email
-    password = data.password
-    
-    print("Login attempt for:", email)
-    print("password:", password)
+def login(data: LoginSchema, response: Response, db: Session = Depends(get_db)):
 
-    count_query = text("SELECT COUNT(*) FROM employee")
-    user_count = db.execute(count_query).scalar()
+    token, result = login_service(data, db)
 
-    if user_count == 0:
-        if email == "admin" and password == "admin":
-            create_admin_query = text("""
-                INSERT INTO employee (full_name, email, password_hash, role)
-                VALUES (:name, :email, :password, :role)
-                RETURNING employee_id, full_name, role
-            """)
-            result = db.execute(
-                create_admin_query,
-                {
-                    "name": "System Admin",
-                    "email": "admin",
-                    "password": "admin", 
-                    "role": "admin"
-                }
-            ).mappings().first()
-
-            db.commit()
-
-            return {
-                "message": "Initial admin created",
-                "employee_id": result["employee_id"],
-                "full_name": result["full_name"],
-                "role": result["role"]
-            }
-
-        raise HTTPException(
-            status_code=401,
-            detail="System not initialized. Use default admin credentials."
-        )
-
-    query = text("""
-        SELECT employee_id, full_name, email, password_hash, role
-        FROM employee
-        WHERE email = :email
-    """)
-
-    result = db.execute(query, {"email": email}).mappings().first()
-    verify=verify_password(password,result["password_hash"])
-    if verify == False:
-        raise HTTPException(status_code=400, detail="Invalid email or password")
-
-    token = create_access_token(data={"email": email, "role": result["role"]})
-    
     response.set_cookie(
         key="access_token",
         value=token,
-        httponly=True,   # JS CANNOT read it
+        httponly=True,
         samesite="Lax",
-        secure=False     # True in production (HTTPS)
+        secure=False
     )
 
     return {
@@ -155,87 +60,80 @@ def login(data: LoginSchema, db: Session = Depends(get_db), response: Response =
 
 
 @app.post("/update_details")
-def update_details(
-    data:UpdateUserSchema,
-    db: Session = Depends(get_db)
-):
-    name = data.name
-    email = data.email
-    password = data.password
-    query = text("""
-        UPDATE employee
-        SET full_name = :name
-            ,email = :email,
-            password_hash = :password
-        WHERE email = 'admin'
-          AND password_hash = 'admin'
-        RETURNING employee_id, role
-    """)
+def update_details(data: UpdateUserSchema, db: Session = Depends(get_db)):
 
-    result = db.execute(
-        query,
-        {   "name": name,
-            "email": email,
-            "password": create_password_hash(password) 
-        }
-    ).mappings().first()
+    update_user_service(data, db)
 
-    if not result:
-        raise HTTPException(
-            status_code=400,
-            detail="Admin update not allowed or already completed"
-        )
-
-    db.commit()
-
-    return {
-        "message": "Admin credentials updated successfully",
-        "employee_id": result["employee_id"],
-        "role": result["role"]
-    }
+    return {"message": "credentials updated successfully"}
 
 
 @app.post("/create_employee")
 def create_employee(
-    data:NewUserSchema,
+    data: NewUserSchema,
     user=Depends(role_required(["admin"])),
     db: Session = Depends(get_db)
 ):
-    full_name = data.full_name
-    email = data.email
-    password = data.password
-    role = data.role
-    query = text("""
-        INSERT INTO employee (full_name, email, password_hash, role)
-        VALUES (:full_name, :email, :password_hash, :role)
-        RETURNING employee_id;
-    """)
 
-    try:
-        result = db.execute(query, {
-            "full_name": full_name,
-            "email": email,
-            "password_hash": create_password_hash(password),
-            "role": role
-        })
-        db.commit()
-        return {"employee_id": result.scalar(), "message": "Employee created"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+    employee_id = create_employee_service(data, db)
 
-# GET all employees
+    return {"employee_id": employee_id, "message": "Employee created"}
+
+
 @app.get("/employee")
 def get_employees(db: Session = Depends(get_db)):
-    query = text("SELECT * FROM employee")
-    result = db.execute(query).mappings().all()
-    return result
+
+    return get_all_employees_service(db)
+
+
+@app.delete("/delete_employee/{employee_id}")
+def delete_employee(employee_id: int, db: Session = Depends(get_db)):
+
+    delete_employee_service(employee_id, db)
+
+    return {"message": "Employee deleted successfully"}
+
+
+
+from fastapi import UploadFile, File
+from typing import List
+
+from fastapi import Form
+@app.post("/enroll_customer")
+def enroll_customer(
+    empID: int = Form(...),
+    DOB: date = Form(...),
+    fullName: str = Form(...),
+    email: str = Form(...),
+    images: List[UploadFile] = File(...),
+    db: Session = Depends(get_db)
+):
+    
+    data = enrollSchema(
+        empID=empID,
+        DOB=DOB,
+        fullName=fullName,
+        email=email
+    )
+
+    return enroll_customer_service(data, images, db)
+
+
+@app.post("/test_verify")
+def test_verify(
+    reference_images: List[UploadFile] = File(...),
+    test_image: UploadFile = File(...)
+):
+
+    return verify_test_service(reference_images, test_image)
+
 
 @app.post("/logout")
 def logout(response: Response):
+
     response.delete_cookie(
         key="access_token",
         httponly=True,
         samesite="Lax"
     )
+
     return {"message": "Logged out successfully"}

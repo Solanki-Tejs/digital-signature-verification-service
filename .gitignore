@@ -4,3 +4,11 @@ venv
 # Python cache
 __pycache__
 __pycache__/
+
+# Upload folders
+temp_uploads/
+uploads/
+
+# OS files
+.DS_Store
+Thumbs.db

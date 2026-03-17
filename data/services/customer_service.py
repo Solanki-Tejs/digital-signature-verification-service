@@ -182,8 +182,8 @@ def enroll_customer_service(data, images, db):
             :email,
             :embedding
         )
-        RETURNING customer_id
-    """),{
+        RETURNING customer_id, reference_id
+    """), {
         "employee_id": data.empID,
         "dob": data.DOB,
         "full_name": data.fullName,
@@ -191,8 +191,11 @@ def enroll_customer_service(data, images, db):
         "embedding": embedding_bytes
     })
 
-    customer_id = result.scalar()
+    row = result.fetchone()
 
+    customer_id = row.customer_id
+    reference_id = row.reference_id
+    
     # -------------------------------
     # MOVE IMAGES TO FINAL FOLDER
     # -------------------------------
@@ -218,7 +221,7 @@ def enroll_customer_service(data, images, db):
 
     return {
         "status": "success",
-        "customer_id": customer_id,
+        "customer_id": reference_id,
         "signature_folder": final_folder
     }
 
@@ -245,17 +248,97 @@ from fastapi import HTTPException
 from sklearn.metrics.pairwise import cosine_similarity
 
 
-THRESHOLD = 0.75   # adjust later after testing
+THRESHOLD = 0.95   # adjust later after testing
 
 
-def verify_customer_signature(reference_id, image, db):
+# def verify_customer_signature(reference_id, image, db):
 
+#     # -------------------------------
+#     # GET EMBEDDING FROM DATABASE
+#     # -------------------------------
+
+#     result = db.execute(text("""
+#         SELECT avg_embedding
+#         FROM customer_signature
+#         WHERE reference_id = :rid
+#     """), {
+#         "rid": reference_id
+#     }).fetchone()
+
+#     if not result:
+#         raise HTTPException(status_code=404, detail="Customer not found")
+
+#     reference_embedding = np.frombuffer(result.avg_embedding, dtype="float32")
+
+#     # -------------------------------
+#     # SAVE TEMP IMAGE
+#     # -------------------------------
+
+#     temp_id = str(uuid.uuid4())
+#     temp_path = os.path.join(TEMP_DIR, f"{temp_id}.png")
+
+#     with open(temp_path, "wb") as buffer:
+#         shutil.copyfileobj(image.file, buffer)
+
+#     # -------------------------------
+#     # COMPUTE TEST EMBEDDING
+#     # -------------------------------
+
+#     img_tensor = load_image(temp_path)
+
+#     with torch.no_grad():
+#         test_embedding = model(img_tensor)
+
+#     test_embedding = test_embedding.cpu().numpy().flatten()
+
+#     # -------------------------------
+#     # COSINE SIMILARITY
+#     # -------------------------------
+
+#     score = cosine_similarity(
+#         reference_embedding.reshape(1, -1),
+#         test_embedding.reshape(1, -1)
+#     ).item()
+
+#     os.remove(temp_path)
+
+#     return {
+#         "reference_id": reference_id,
+#         "match": bool(score > THRESHOLD),
+#         "similarity_score": round(float(score), 4)
+#     }
+
+
+
+import os
+
+def get_first_image(folder_path):
+    files = os.listdir(folder_path)
+
+    # filter only image files (optional but recommended)
+    image_files = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+
+    if not image_files:
+        return None
+
+    # get first image
+    first_image = image_files[0]
+
+    # full path
+    full_path = os.path.join(folder_path, first_image)
+
+    return full_path
+
+
+
+def verify_customer_signature(reference_id, image,empID, db):
+    print(empID)
     # -------------------------------
-    # GET EMBEDDING FROM DATABASE
+    # GET EMBEDDING + EMPLOYEE ID
     # -------------------------------
 
     result = db.execute(text("""
-        SELECT avg_embedding
+        SELECT avg_embedding, initial_signature_path
         FROM customer_signature
         WHERE reference_id = :rid
     """), {
@@ -266,6 +349,7 @@ def verify_customer_signature(reference_id, image, db):
         raise HTTPException(status_code=404, detail="Customer not found")
 
     reference_embedding = np.frombuffer(result.avg_embedding, dtype="float32")
+    employee_id = empID
 
     # -------------------------------
     # SAVE TEMP IMAGE
@@ -297,10 +381,81 @@ def verify_customer_signature(reference_id, image, db):
         test_embedding.reshape(1, -1)
     ).item()
 
-    os.remove(temp_path)
+    # -------------------------------
+    # DECISION LOGIC
+    # -------------------------------
 
+    if score >= 0.95:
+        decision = "VALID"
+    elif score >= 0.90:
+        decision = "SUSPICIOUS"
+    else:
+        decision = "MISMATCH"
+
+    # -------------------------------
+    # SAVE IMAGE (OPTIONAL BUT RECOMMENDED)
+    # -------------------------------
+
+    verify_folder = os.path.join(UPLOAD_DIR, "verifications")
+    os.makedirs(verify_folder, exist_ok=True)
+
+    final_image_path = os.path.join(verify_folder, f"{temp_id}.png")
+    shutil.move(temp_path, final_image_path)
+
+    # -------------------------------
+    # INSERT INTO VERIFICATION TABLE
+    # -------------------------------
+
+    db.execute(text("""
+        INSERT INTO customer_signature_verification (
+            reference_id,
+            employee_id,
+            signature_image_path,
+            similarity_score,
+            final_decision
+        )
+        VALUES (
+            :reference_id,
+            :employee_id,
+            :path,
+            :score,
+            :decision
+        )
+    """), {
+        "reference_id": reference_id,
+        "employee_id": employee_id,
+        "path": final_image_path,
+        "score": float(score),
+        "decision": decision
+    })
+
+    db.commit()
+    folder = result.initial_signature_path
     return {
         "reference_id": reference_id,
-        "match": bool(score > THRESHOLD),
-        "similarity_score": round(float(score), 4)
+        "match": decision == "VALID",
+        "decision": decision,
+        "similarity_score": round(float(score), 4),
+        "uploaded_image": final_image_path,
+        "reference_image": get_first_image(folder)
     }
+
+
+# CREATE SEQUENCE verification_id_seq START 1;
+
+# CREATE TABLE customer_signature_verification (
+#     verification_id BIGINT PRIMARY KEY DEFAULT nextval('verification_id_seq'),
+
+#     reference_id BIGINT NOT NULL,
+#     employee_id INTEGER NOT NULL,
+
+#     signature_image_path VARCHAR(500),
+
+#     similarity_score DOUBLE PRECISION,
+
+#     final_decision VARCHAR(20) CHECK (
+#         final_decision IN ('VALID', 'SUSPICIOUS', 'MISMATCH')
+#     ),
+
+#     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+# );

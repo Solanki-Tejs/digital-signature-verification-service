@@ -1,5 +1,6 @@
 import io
 import base64
+from fastapi.staticfiles import StaticFiles
 import numpy as np
 import cv2
 from fastapi import FastAPI, File, UploadFile
@@ -24,7 +25,11 @@ import sys
 sys.path.append("/outputs")
 
 app = FastAPI()
-
+app.mount(
+    "/uploads",
+    StaticFiles(directory="uploads"),  # 🔥 FIX HERE
+    name="uploads"
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -150,12 +155,102 @@ def enroll_customer(
 async def verify_signature(
     reference_id: int = Form(...),
     image: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user = Depends(get_current_user)
 ):
-    
-    result = verify_customer_signature(reference_id, image, db)
+
+    employee_email = user["email"]
+
+    query = text("""
+        SELECT employee_id
+        FROM employee
+        WHERE email = :email
+    """)
+
+    result = db.execute(query, {"email": employee_email}).fetchone()
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    empID = result[0]
+
+    print(empID)  # ✅ now safe
+
+    result = verify_customer_signature(reference_id, image, empID, db)
 
     return result
+
+@app.get("/verification-history")
+def get_verification_history(
+    db: Session = Depends(get_db),
+    me = Depends(get_current_user)
+):
+    role = me["role"]
+    email = me["email"]
+    # email = user["email"]
+    print(email)
+    emp_query = db.execute(text("""
+        SELECT employee_id
+        FROM employee
+        WHERE email = :email
+    """), {
+        "email": email
+    }).fetchone()
+
+    if not emp_query:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    employee_id = emp_query.employee_id
+
+    if role == "admin":
+        result = db.execute(text("""
+            SELECT 
+                verification_id,
+                reference_id,
+                employee_id,
+                signature_image_path,
+                similarity_score,
+                final_decision,
+                created_at
+            FROM customer_signature_verification
+            ORDER BY created_at DESC
+        """))
+    else:
+        result = db.execute(text("""
+            SELECT 
+                verification_id,
+                reference_id,
+                employee_id,
+                signature_image_path,
+                similarity_score,
+                final_decision,
+                created_at
+            FROM customer_signature_verification
+            WHERE employee_id = :emp_id
+            ORDER BY created_at DESC
+        """), {
+            "emp_id": employee_id
+        })
+
+    records = result.fetchall()
+
+    return {
+        "role": role,
+        "count": len(records),
+        "data": [
+            {
+                "verification_id": row.verification_id,
+                "reference_id": row.reference_id,
+                "employee_id": row.employee_id,
+                "image_path": row.signature_image_path,
+                "similarity_score": round(float(row.similarity_score), 4) if row.similarity_score else None,
+                "decision": row.final_decision,
+                "created_at": str(row.created_at)
+            }
+            for row in records
+        ]
+    }
+
 
 @app.post(
     "/test-preprocessing",
@@ -379,6 +474,8 @@ async def test_preprocessing(
     </html>
     """
     return HTMLResponse(content=html)
+
+
 
 @app.post("/logout")
 def logout(response: Response):

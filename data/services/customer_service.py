@@ -182,7 +182,7 @@ def enroll_customer_service(data, images, db):
             :email,
             :embedding
         )
-        RETURNING customer_id, reference_id
+        RETURNING customer_id, reference_id,full_name
     """), {
         "employee_id": data.empID,
         "dob": data.DOB,

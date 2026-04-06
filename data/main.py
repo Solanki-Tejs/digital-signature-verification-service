@@ -1,3 +1,4 @@
+from datetime import datetime
 import io
 import base64
 from fastapi.staticfiles import StaticFiles
@@ -9,6 +10,8 @@ from fastapi import FastAPI, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
+from schemas.ActivityLog_schema import ActivityLogCreate
+from utils.activity_logs import log_activity
 from utils.database import SessionLocal
 from schemas.employee_schema import *
 from schemas.customer_schema import *
@@ -56,7 +59,7 @@ def root():
 def get_me(user=Depends(get_current_user)):
     return {"isAuth": True}
 
-
+#CREATE, UPDATE, DELETE, VERIFY,
 @app.post("/login")
 def login(data: LoginSchema, response: Response, db: Session = Depends(get_db)):
 
@@ -70,6 +73,16 @@ def login(data: LoginSchema, response: Response, db: Session = Depends(get_db)):
         secure=False
     )
 
+    log_activity(db, ActivityLogCreate(
+        emp_id=result["employee_id"],
+        emp_role=result["role"],
+        action="LOGIN",
+        entity_type=result["role"],
+        entity_id=result["employee_id"],
+        description=f"LOGIN employee {result["full_name"]}"
+    ))
+
+
     return {
         "message": msg,
         "employee_id": result["employee_id"],
@@ -79,9 +92,22 @@ def login(data: LoginSchema, response: Response, db: Session = Depends(get_db)):
 
 
 @app.post("/update_details")
-def update_details(data: UpdateUserSchema, db: Session = Depends(get_db)):
+def update_details(
+    data: UpdateUserSchema,
+    db: Session = Depends(get_db),
+    user = Depends(get_current_user)
+):
 
     update_user_service(data, db)
+
+    log_activity(db, ActivityLogCreate(
+        emp_id=user["employee_id"],
+        emp_role=user["role"],
+        action="UPDATE",
+        entity_type="EMPLOYEE",
+        entity_id=data.employeeId,
+        description=f"Updated employee details (ID: {data.employeeId})"
+    ))
 
     return {"message": "credentials updated successfully"}
 
@@ -90,12 +116,20 @@ def update_details(data: UpdateUserSchema, db: Session = Depends(get_db)):
 def create_employee(
     data: NewUserSchema,
     user=Depends(role_required(["admin"])),
+    current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
 
-    employee_id = create_employee_service(data, db)
-
-    return {"employee_id": employee_id, "message": "Employee created"}
+    data = create_employee_service(data, db)
+    log_activity(db, ActivityLogCreate(
+        emp_id=current_user["employee_id"],
+        emp_role=current_user["role"],
+        action="CREATE",
+        entity_type="EMPLOYEE",
+        entity_id=data["employee_id"],
+        description=f"Employee '{data['full_name']}' created"
+    ))
+    return {"employee_id": data["full_name"], "message": "Employee created"}
 
 
 @app.get("/employee")
@@ -105,10 +139,17 @@ def get_employees(db: Session = Depends(get_db)):
 
 
 @app.delete("/delete_employee/{employee_id}")
-def delete_employee(employee_id: int, db: Session = Depends(get_db)):
+def delete_employee(employee_id: int,current_user = Depends(get_current_user),db: Session = Depends(get_db)):
 
     delete_employee_service(employee_id, db)
-
+    log_activity(db, ActivityLogCreate(
+        emp_id=current_user["employee_id"],
+        emp_role=current_user["role"],
+        action="DELETE",
+        entity_type="EMPLOYEE",
+        entity_id=employee_id,
+        description=f"Employee 'id num : {employee_id}' has DELETED"
+    ))
     return {"message": "Employee deleted successfully"}
 
 
@@ -140,7 +181,7 @@ def enroll_customer(
     if not result:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    empID = result[0]
+    empID = user["employee_id"]
 
     data = enrollSchema(
         empID=empID,
@@ -149,7 +190,17 @@ def enroll_customer(
         email=email
     )
 
-    return enroll_customer_service(data, images, db)
+    data=enroll_customer_service(data, images, db)
+
+    log_activity(db, ActivityLogCreate(
+        emp_id=user["employee_id"],
+        emp_role=user["role"],
+        action="CREATE",
+        entity_type="CUSTOMER",
+        entity_id=data["customer_id"],  # reference_id in your case
+        description=f"Customer '{fullName}' enrolled"
+    ))
+    return data
 
 @app.post("/verify-signature")
 async def verify_signature(
@@ -172,12 +223,22 @@ async def verify_signature(
     if not result:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    empID = result[0]
+    empID = user["employee_id"]
 
-    print(empID)  # ✅ now safe
+    print(empID)  
 
     result = verify_customer_signature(reference_id, image, empID, db)
-
+    log_activity(db, ActivityLogCreate(
+            emp_id=user["employee_id"],
+            emp_role=user["role"],
+            action="VERIFY",
+            entity_type="SIGNATURE",
+            entity_id=reference_id,
+            description=(
+                f"Signature verified for ref {reference_id} - "
+                f"{result['decision']} (score: {result['similarity_score']})"
+            )
+        ))
     return result
 
 @app.get("/verification-history")
@@ -187,7 +248,6 @@ def get_verification_history(
 ):
     role = me["role"]
     email = me["email"]
-    # email = user["email"]
     print(email)
     emp_query = db.execute(text("""
         SELECT employee_id
@@ -200,7 +260,7 @@ def get_verification_history(
     if not emp_query:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    employee_id = emp_query.employee_id
+    employee_id = me["employee_id"]
 
     if role == "admin":
         result = db.execute(text("""
@@ -477,13 +537,44 @@ async def test_preprocessing(
 
 
 
-@app.post("/logout")
-def logout(response: Response):
+@app.get("/logs")
+def get_logs(db: Session = Depends(get_db)):
+    result = db.execute(text("SELECT * FROM activity_logs ORDER BY created_at DESC"))
+    
+    logs = [dict(row._mapping) for row in result]
 
+    return logs
+
+
+
+@app.post("/logout")
+def logout(
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    print(current_user)
+    # 1. Remove cookie
     response.delete_cookie(
         key="access_token",
         httponly=True,
         samesite="Lax"
     )
+
+    # 2. Update DB
+    db.execute(
+        text("UPDATE employee SET is_logged_in = FALSE WHERE employee_id = :id"),
+        {"id": current_user["employee_id"]}
+    )
+    db.commit()
+
+    log_activity(db, ActivityLogCreate(
+        emp_id=current_user["employee_id"],
+        emp_role=current_user["role"],
+        action="LOGOUT",
+        entity_type=current_user["role"],
+        entity_id=current_user["employee_id"],
+        description=f"LOGOUT employee {current_user["name"]}"
+    ))
 
     return {"message": "Logged out successfully"}

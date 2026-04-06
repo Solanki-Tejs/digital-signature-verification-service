@@ -57,13 +57,31 @@ def login_service(data, db):
     if verify == False:
         raise HTTPException(status_code=400, detail="Invalid email or password")
 
-    token = create_access_token(data={"email": email, "role": result["role"]})
-    
+    token = create_access_token(data={"email": email, "role": result["role"],"employee_id":result["employee_id"],"name":result["full_name"]})
+    db.execute(
+    text("UPDATE employee SET is_logged_in = TRUE WHERE employee_id = :id"),
+    {"id": result["employee_id"]})
+    db.commit()
     return token,result,msg
-
 
 def update_user_service(data, db):
 
+    # 1. Get existing password
+    existing = db.execute(
+        text("SELECT password_hash FROM employee WHERE employee_id = :id"),
+        {"id": data.employeeId}
+    ).fetchone()
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    # 2. Decide password
+    if data.password and data.password.strip() != "":
+        password_hash = create_password_hash(data.password)
+    else:
+        password_hash = existing[0]  # keep old password
+
+    # 3. Update query
     query = text("""
         UPDATE employee
         SET full_name = :name,
@@ -78,7 +96,7 @@ def update_user_service(data, db):
         {
             "name": data.name,
             "email": data.email,
-            "password": create_password_hash(data.password),
+            "password": password_hash,
             "employeeId": data.employeeId
         }
     ).mappings().first()
@@ -94,7 +112,7 @@ def create_employee_service(data, db):
     query = text("""
         INSERT INTO employee (full_name, email, password_hash, role)
         VALUES (:full_name, :email, :password_hash, :role)
-        RETURNING employee_id
+        RETURNING employee_id,full_name
     """)
 
     result = db.execute(
@@ -106,10 +124,10 @@ def create_employee_service(data, db):
             "role": data.role
         }
     )
-
+    row = result.fetchone() 
     db.commit()
 
-    return result.scalar()
+    return dict(row._mapping)
 
 
 def get_all_employees_service(db):

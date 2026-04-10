@@ -65,6 +65,7 @@ def login_service(data, db):
     return token,result,msg
 
 def update_user_service(data, db):
+    print(data)
 
     # 1. Get existing password
     existing = db.execute(
@@ -76,17 +77,17 @@ def update_user_service(data, db):
         raise HTTPException(status_code=404, detail="Employee not found")
 
     # 2. Decide password
-    if data.password and data.password.strip() != "":
-        password_hash = create_password_hash(data.password)
-    else:
-        password_hash = existing[0]  # keep old password
+    # if data.password and data.password.strip() != "":
+    #     password_hash = create_password_hash(data.password)
+    # else:
+    #     password_hash = existing[0]  # keep old password
 
     # 3. Update query
     query = text("""
         UPDATE employee
         SET full_name = :name,
             email = :email,
-            password_hash = :password
+            role = :role
         WHERE employee_id = :employeeId
         RETURNING employee_id
     """)
@@ -96,8 +97,9 @@ def update_user_service(data, db):
         {
             "name": data.name,
             "email": data.email,
-            "password": password_hash,
-            "employeeId": data.employeeId
+            # "password": password_hash,
+            "employeeId": data.employeeId,
+            "role": data.role
         }
     ).mappings().first()
 

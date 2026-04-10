@@ -8,8 +8,9 @@ class LoginSchema(BaseModel):
 class UpdateUserSchema(BaseModel):
     name: str
     email: str
-    password: str
+    # password: str
     employeeId: int
+    role: str
 
 
 class NewUserSchema(BaseModel):

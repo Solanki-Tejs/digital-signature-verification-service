@@ -265,29 +265,33 @@ def get_verification_history(
     if role == "admin":
         result = db.execute(text("""
             SELECT 
-                verification_id,
-                reference_id,
-                employee_id,
-                signature_image_path,
-                similarity_score,
-                final_decision,
-                created_at
-            FROM customer_signature_verification
-            ORDER BY created_at DESC
+                csv.verification_id,
+                csv.reference_id,
+                e.email AS employee_email,
+                csv.signature_image_path,
+                csv.similarity_score,
+                csv.final_decision,
+                csv.created_at
+            FROM customer_signature_verification AS csv
+            JOIN employee AS e 
+                ON csv.employee_id = e.employee_id
+            ORDER BY csv.created_at DESC
         """))
     else:
         result = db.execute(text("""
             SELECT 
-                verification_id,
-                reference_id,
-                employee_id,
-                signature_image_path,
-                similarity_score,
-                final_decision,
-                created_at
-            FROM customer_signature_verification
-            WHERE employee_id = :emp_id
-            ORDER BY created_at DESC
+                csv.verification_id,
+                csv.reference_id,
+                e.email AS employee_email,
+                csv.signature_image_path,
+                csv.similarity_score,
+                csv.final_decision,
+                csv.created_at
+            FROM customer_signature_verification AS csv
+            JOIN employee AS e 
+                ON csv.employee_id = e.employee_id
+            WHERE csv.employee_id = :emp_id
+            ORDER BY csv.created_at DESC
         """), {
             "emp_id": employee_id
         })
@@ -301,7 +305,7 @@ def get_verification_history(
             {
                 "verification_id": row.verification_id,
                 "reference_id": row.reference_id,
-                "employee_id": row.employee_id,
+                "employee_email": row.employee_email,
                 "image_path": row.signature_image_path,
                 "similarity_score": round(float(row.similarity_score), 4) if row.similarity_score else None,
                 "decision": row.final_decision,
@@ -539,7 +543,22 @@ async def test_preprocessing(
 
 @app.get("/logs")
 def get_logs(db: Session = Depends(get_db)):
-    result = db.execute(text("SELECT * FROM activity_logs ORDER BY created_at DESC"))
+    result = db.execute(text("""
+        SELECT 
+            al.id,
+            al.emp_id,
+            e.email AS employee_email,
+            al.emp_role,
+            al.action,
+            al.entity_type,
+            al.entity_id,
+            al.description,
+            al.created_at
+        FROM activity_logs AS al
+        JOIN employee AS e 
+            ON al.emp_id = e.employee_id
+        ORDER BY al.created_at DESC
+    """))
     
     logs = [dict(row._mapping) for row in result]
 

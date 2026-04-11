@@ -1,5 +1,4 @@
-from datetime import datetime
-import io
+from datetime import datetime, timedelta
 import base64
 from fastapi.staticfiles import StaticFiles
 import numpy as np
@@ -41,6 +40,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
 
 def get_db():
     db = SessionLocal()
@@ -575,96 +578,6 @@ async def test_preprocessing(
     return HTMLResponse(content=html)
 
 
-
-# @app.get("/logs")
-# def get_logs(
-#     page: int = Query(1, ge=1),
-#     limit: int = Query(10, le=100),
-#     emp_id: int | None = None,
-#     action: str | None = None,
-#     search: str | None = None,
-#     sort: str = Query("desc"),
-#     db: Session = Depends(get_db)
-# ):
-#     offset = (page - 1) * limit
-
-#     # Base query (shared)
-#     base_query = """
-#         FROM activity_logs AS al
-#         JOIN employee AS e 
-#             ON al.emp_id = e.employee_id
-#     """
-
-#     conditions = []
-#     params = {
-#         "limit": limit,
-#         "offset": offset
-#     }
-
-#     # 🔍 Filters
-#     if emp_id:
-#         conditions.append("al.emp_id = :emp_id")
-#         params["emp_id"] = emp_id
-
-#     if action:
-#         conditions.append("al.action = :action")
-#         params["action"] = action
-
-#     if search:
-#         conditions.append("""
-#             (
-#                 e.email ILIKE :search OR
-#                 al.description ILIKE :search OR
-#                 CAST(al.entity_id AS TEXT) ILIKE :search
-#             )
-#         """)
-#         params["search"] = f"%{search}%"
-
-#     # WHERE clause
-#     where_clause = ""
-#     if conditions:
-#         where_clause = "WHERE " + " AND ".join(conditions)
-
-#     # 🔃 Sorting
-#     order = "ASC" if sort.lower() == "asc" else "DESC"
-
-#     # 📦 Main query
-#     query = f"""
-#         SELECT 
-#             al.id,
-#             al.emp_id,
-#             e.email AS employee_email,
-#             al.emp_role,
-#             al.action,
-#             al.entity_type,
-#             al.entity_id,
-#             al.description,
-#             al.created_at
-#         {base_query}
-#         {where_clause}
-#         ORDER BY al.created_at {order}
-#         LIMIT :limit OFFSET :offset
-#     """
-
-#     result = db.execute(text(query), params)
-#     logs = [dict(row._mapping) for row in result]
-
-#     # 🔢 Count query (same filters)
-#     count_query = f"""
-#         SELECT COUNT(*)
-#         {base_query}
-#         {where_clause}
-#     """
-
-#     total = db.execute(text(count_query), params).scalar()
-
-#     return {
-#         "data": logs,
-#         "page": page,
-#         "limit": limit,
-#         "total": total
-#     }
-
 @app.get("/logs")
 def get_logs(
     pagination: dict = Depends(pagination_params),
@@ -768,3 +681,185 @@ def logout(
     ))
 
     return {"message": "Logged out successfully"}
+
+#   ----------------------- Stats ------------------------------
+
+@app.get("/stats")
+def get_dashboard_stats(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    today = datetime.utcnow().date()
+    week_ago = datetime.utcnow() - timedelta(days=7)
+
+    query = text("""
+        SELECT
+            (SELECT COUNT(*) FROM customer_signature_verification) AS total_verifications,
+            (SELECT COUNT(*) FROM employee) AS total_employees,
+            (SELECT COUNT(*) FROM customer_signature_verification
+                WHERE DATE(created_at) = :today) AS today_verifications,
+            (SELECT COUNT(*) FROM customer_signature_verification
+                WHERE created_at >= :week_ago) AS week_verifications
+    """)
+
+    result = db.execute(query, {
+        "today": today,
+        "week_ago": week_ago
+    }).mappings().first()
+
+    return result
+
+@app.get("/recent-verifications")
+def get_recent_verifications(
+    limit: int = 5,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    if current_user["role"] != "admin":
+        query = text("""
+            SELECT
+                verification_id,
+                reference_id,
+                similarity_score,
+                final_decision AS decision,
+                created_at
+            FROM customer_signature_verification
+            WHERE employee_id = :emp_id
+            ORDER BY created_at DESC
+            LIMIT :limit
+        """)
+
+        result = db.execute(query, {
+            "emp_id": current_user["employee_id"],
+            "limit": limit
+        }).mappings().all()
+
+        return {"data": result}
+
+    query = text("""
+        SELECT
+            verification_id,
+            reference_id,
+            similarity_score,
+            final_decision AS decision,
+            created_at
+        FROM customer_signature_verification
+        ORDER BY created_at DESC
+        LIMIT :limit
+    """)
+
+    result = db.execute(query, {"limit": limit}).mappings().all()
+
+    return {"data": result}
+
+@app.get("/employee-stats")
+def get_employee_stats(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    today = datetime.utcnow().date()
+    week_ago = datetime.utcnow() - timedelta(days=7)
+
+    # 👇 EMPLOYEE VIEW
+    print(current_user)
+    if current_user["role"] != "admin":
+        query = text("""
+            SELECT
+                COUNT(*) AS total_verifications,
+
+                COUNT(*) FILTER (
+                    WHERE DATE(created_at) = :today
+                ) AS today_verifications,
+
+                COUNT(*) FILTER (
+                    WHERE created_at >= :week_ago
+                ) AS week_verifications,
+
+                COUNT(*) FILTER (
+                    WHERE final_decision = 'VALID'
+                ) AS valid_count,
+
+                ROUND(
+                    CASE 
+                        WHEN COUNT(*) = 0 THEN 0
+                        ELSE (COUNT(*) FILTER (WHERE final_decision = 'VALID') * 100.0 / COUNT(*))
+                    END,
+                    2
+                ) AS match_rate
+
+            FROM customer_signature_verification
+            WHERE employee_id = :emp_id
+        """)
+
+        result = db.execute(query, {
+            "today": today,
+            "week_ago": week_ago,
+            "emp_id": current_user["employee_id"]
+        }).mappings().first()
+
+        return result
+
+    # 👇 ADMIN VIEW (breakdown)
+    query = text("""
+        SELECT
+            e.employee_id,
+            e.full_name,
+            COUNT(csv.verification_id) AS total_verifications,
+            COUNT(*) FILTER (WHERE DATE(csv.created_at) = :today) AS today_verifications,
+            COUNT(*) FILTER (WHERE csv.created_at >= :week_ago) AS week_verifications
+        FROM employee e
+        LEFT JOIN customer_signature_verification csv
+            ON e.employee_id = csv.employee_id
+        GROUP BY e.employee_id, e.full_name
+        ORDER BY total_verifications DESC
+    """)
+
+    result = db.execute(query, {
+        "today": today,
+        "week_ago": week_ago
+    }).mappings().all()
+
+    return {"employees": result}
+
+@app.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    query = text("""
+        SELECT password_hash 
+        FROM employee 
+        WHERE employee_id = :emp_id
+    """)
+
+    user = db.execute(query, {
+        "emp_id": current_user["employee_id"]
+    }).fetchone()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    stored_hash = user[0]
+
+    if not verify_password(payload.old_password, stored_hash):
+        raise HTTPException(status_code=400, detail="Old password is incorrect")
+
+    if verify_password(payload.new_password, stored_hash):
+        raise HTTPException(status_code=400, detail="New password must be different")
+
+    new_hashed_password = create_password_hash(payload.new_password)
+
+    update_query = text("""
+        UPDATE employee
+        SET password_hash = :new_password
+        WHERE employee_id = :emp_id
+    """)
+
+    db.execute(update_query, {
+        "new_password": new_hashed_password,
+        "emp_id": current_user["employee_id"]
+    })
+    db.commit()
+
+    return {"message": "Password updated successfully"}

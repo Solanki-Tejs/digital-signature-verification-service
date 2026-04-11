@@ -4,7 +4,7 @@ from sqlalchemy import text
 from fastapi import HTTPException
 from utils.hash_password import create_password_hash, verify_password
 from utils.jwt_token import create_access_token
-
+from utils.pagination import paginate_query
 
 def login_service(data, db):
 
@@ -132,11 +132,57 @@ def create_employee_service(data, db):
     return dict(row._mapping)
 
 
-def get_all_employees_service(db):
+def get_all_employees_service(db, page, limit, search=None, role=None, sort="desc"):
 
-    query = text("SELECT * FROM employee")
+    select_query = """
+        SELECT 
+            employee_id,
+            full_name,
+            email,
+            role,
+            created_at,
+            is_logged_in
+    """
 
-    return db.execute(query).mappings().all()
+    base_query = """
+        FROM employee
+    """
+
+    conditions = []
+    params = {}
+
+    # Search (name or email)
+    if search:
+        conditions.append("""
+            (
+                full_name ILIKE :search OR
+                email ILIKE :search
+            )
+        """)
+        params["search"] = f"%{search}%"
+
+    # Role filter
+    if role:
+        conditions.append("role = :role")
+        params["role"] = role
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    # Sorting
+    order = "ASC" if sort.lower() == "asc" else "DESC"
+    order_by = f"ORDER BY created_at {order}"
+
+    # Reuse pagination helper
+    return paginate_query(
+        db=db,
+        select_query=select_query,
+        base_query=base_query,
+        where_clause=where_clause,
+        params=params,
+        page=page,
+        limit=limit,
+        order_by=order_by
+    )
 
 
 def delete_employee_service(employee_id, db):

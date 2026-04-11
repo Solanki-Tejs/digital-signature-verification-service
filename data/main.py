@@ -4,7 +4,7 @@ import base64
 from fastapi.staticfiles import StaticFiles
 import numpy as np
 import cv2
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Query
 from fastapi.responses import HTMLResponse
 from fastapi import FastAPI, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +19,7 @@ from services.employee_service import *
 from services.customer_service import *
 from services.preprocessing_service import *
 from dependencies.auth_dependencies import role_required, get_current_user
+from utils.pagination import paginate_query
 
 def numpy_to_base64(img_array: np.ndarray) -> str:
     """Convert numpy image array to base64 PNG string for Swagger display."""
@@ -41,7 +42,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 def get_db():
     db = SessionLocal()
     try:
@@ -49,6 +49,11 @@ def get_db():
     finally:
         db.close()
 
+def pagination_params(
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, le=100)
+):
+    return {"page": page, "limit": limit}
 
 @app.get("/")
 def root():
@@ -133,9 +138,21 @@ def create_employee(
 
 
 @app.get("/employee")
-def get_employees(db: Session = Depends(get_db)):
-
-    return get_all_employees_service(db)
+def get_employees(
+    pagination: dict = Depends(pagination_params),
+    search: str | None = None,
+    role: str | None = None,
+    sort: str = Query("desc"),
+    db: Session = Depends(get_db)
+):
+    return get_all_employees_service(
+        db=db,
+        page=pagination["page"],
+        limit=pagination["limit"],
+        search=search,
+        role=role,
+        sort=sort
+    )
 
 
 @app.delete("/delete_employee/{employee_id}")
@@ -243,78 +260,96 @@ async def verify_signature(
 
 @app.get("/verification-history")
 def get_verification_history(
+    pagination: dict = Depends(pagination_params),
+    decision: str | None = None,
+    search: str | None = None,
+    sort: str = Query("desc"),
     db: Session = Depends(get_db),
     me = Depends(get_current_user)
 ):
     role = me["role"]
     email = me["email"]
-    print(email)
-    emp_query = db.execute(text("""
-        SELECT employee_id
-        FROM employee
-        WHERE email = :email
-    """), {
-        "email": email
-    }).fetchone()
-
-    if not emp_query:
-        raise HTTPException(status_code=404, detail="Employee not found")
-
     employee_id = me["employee_id"]
 
-    if role == "admin":
-        result = db.execute(text("""
-            SELECT 
-                csv.verification_id,
-                csv.reference_id,
-                e.email AS employee_email,
-                csv.signature_image_path,
-                csv.similarity_score,
-                csv.final_decision,
-                csv.created_at
-            FROM customer_signature_verification AS csv
-            JOIN employee AS e 
-                ON csv.employee_id = e.employee_id
-            ORDER BY csv.created_at DESC
-        """))
-    else:
-        result = db.execute(text("""
-            SELECT 
-                csv.verification_id,
-                csv.reference_id,
-                e.email AS employee_email,
-                csv.signature_image_path,
-                csv.similarity_score,
-                csv.final_decision,
-                csv.created_at
-            FROM customer_signature_verification AS csv
-            JOIN employee AS e 
-                ON csv.employee_id = e.employee_id
-            WHERE csv.employee_id = :emp_id
-            ORDER BY csv.created_at DESC
-        """), {
-            "emp_id": employee_id
-        })
+    # Queries split
+    select_query = """
+        SELECT 
+            csv.verification_id,
+            csv.reference_id,
+            e.email AS employee_email,
+            csv.signature_image_path,
+            csv.similarity_score,
+            csv.final_decision,
+            csv.created_at
+    """
 
-    records = result.fetchall()
+    base_query = """
+        FROM customer_signature_verification AS csv
+        JOIN employee AS e 
+            ON csv.employee_id = e.employee_id
+    """
 
+    conditions = []
+    params = {}
+
+    # Role-based filter
+    if role != "admin":
+        conditions.append("csv.employee_id = :emp_id")
+        params["emp_id"] = employee_id
+
+    # Decision filter
+    if decision:
+        conditions.append("csv.final_decision = :decision")
+        params["decision"] = decision
+
+    # Search filter
+    if search:
+        conditions.append("""
+            (
+                CAST(csv.reference_id AS TEXT) ILIKE :search OR
+                e.email ILIKE :search
+            )
+        """)
+        params["search"] = f"%{search}%"
+
+    # WHERE clause
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    # Sorting
+    order = "ASC" if sort.lower() == "asc" else "DESC"
+    order_by = f"ORDER BY csv.created_at {order}"
+
+    # Pagination call
+    result = paginate_query(
+        db=db,
+        select_query=select_query,
+        base_query=base_query,
+        where_clause=where_clause,
+        params=params,
+        page=pagination["page"],
+        limit=pagination["limit"],
+        order_by=order_by
+    )
+
+    # Format response (keep your custom structure)
     return {
         "role": role,
-        "count": len(records),
+        "page": result["page"],
+        "limit": result["limit"],
+        "total": result["total"],
         "data": [
             {
-                "verification_id": row.verification_id,
-                "reference_id": row.reference_id,
-                "employee_email": row.employee_email,
-                "image_path": row.signature_image_path,
-                "similarity_score": round(float(row.similarity_score), 4) if row.similarity_score else None,
-                "decision": row.final_decision,
-                "created_at": str(row.created_at)
+                "verification_id": row["verification_id"],
+                "reference_id": row["reference_id"],
+                "employee_email": row["employee_email"],
+                "image_path": row["signature_image_path"],
+                "similarity_score": round(float(row["similarity_score"]), 4) if row["similarity_score"] else None,
+                "decision": row["final_decision"],
+                "created_at": str(row["created_at"])
             }
-            for row in records
+            for row in result["data"]
         ]
     }
-
 
 @app.post(
     "/test-preprocessing",
@@ -541,9 +576,108 @@ async def test_preprocessing(
 
 
 
+# @app.get("/logs")
+# def get_logs(
+#     page: int = Query(1, ge=1),
+#     limit: int = Query(10, le=100),
+#     emp_id: int | None = None,
+#     action: str | None = None,
+#     search: str | None = None,
+#     sort: str = Query("desc"),
+#     db: Session = Depends(get_db)
+# ):
+#     offset = (page - 1) * limit
+
+#     # Base query (shared)
+#     base_query = """
+#         FROM activity_logs AS al
+#         JOIN employee AS e 
+#             ON al.emp_id = e.employee_id
+#     """
+
+#     conditions = []
+#     params = {
+#         "limit": limit,
+#         "offset": offset
+#     }
+
+#     # 🔍 Filters
+#     if emp_id:
+#         conditions.append("al.emp_id = :emp_id")
+#         params["emp_id"] = emp_id
+
+#     if action:
+#         conditions.append("al.action = :action")
+#         params["action"] = action
+
+#     if search:
+#         conditions.append("""
+#             (
+#                 e.email ILIKE :search OR
+#                 al.description ILIKE :search OR
+#                 CAST(al.entity_id AS TEXT) ILIKE :search
+#             )
+#         """)
+#         params["search"] = f"%{search}%"
+
+#     # WHERE clause
+#     where_clause = ""
+#     if conditions:
+#         where_clause = "WHERE " + " AND ".join(conditions)
+
+#     # 🔃 Sorting
+#     order = "ASC" if sort.lower() == "asc" else "DESC"
+
+#     # 📦 Main query
+#     query = f"""
+#         SELECT 
+#             al.id,
+#             al.emp_id,
+#             e.email AS employee_email,
+#             al.emp_role,
+#             al.action,
+#             al.entity_type,
+#             al.entity_id,
+#             al.description,
+#             al.created_at
+#         {base_query}
+#         {where_clause}
+#         ORDER BY al.created_at {order}
+#         LIMIT :limit OFFSET :offset
+#     """
+
+#     result = db.execute(text(query), params)
+#     logs = [dict(row._mapping) for row in result]
+
+#     # 🔢 Count query (same filters)
+#     count_query = f"""
+#         SELECT COUNT(*)
+#         {base_query}
+#         {where_clause}
+#     """
+
+#     total = db.execute(text(count_query), params).scalar()
+
+#     return {
+#         "data": logs,
+#         "page": page,
+#         "limit": limit,
+#         "total": total
+#     }
+
 @app.get("/logs")
-def get_logs(db: Session = Depends(get_db)):
-    result = db.execute(text("""
+def get_logs(
+    pagination: dict = Depends(pagination_params),
+    emp_id: int | None = None,
+    action: str | None = None,
+    search: str | None = None,
+    sort: str = Query("desc"),
+    db: Session = Depends(get_db)
+):
+    page = pagination["page"]
+    limit = pagination["limit"]
+
+    select_query = """
         SELECT 
             al.id,
             al.emp_id,
@@ -554,16 +688,53 @@ def get_logs(db: Session = Depends(get_db)):
             al.entity_id,
             al.description,
             al.created_at
+    """
+
+    base_query = """
         FROM activity_logs AS al
         JOIN employee AS e 
             ON al.emp_id = e.employee_id
-        ORDER BY al.created_at DESC
-    """))
-    
-    logs = [dict(row._mapping) for row in result]
+    """
 
-    return logs
+    conditions = []
+    params = {}
 
+    # Filters
+    if emp_id:
+        conditions.append("al.emp_id = :emp_id")
+        params["emp_id"] = emp_id
+
+    if action:
+        conditions.append("al.action = :action")
+        params["action"] = action
+
+    if search:
+        conditions.append("""
+            (
+                e.email ILIKE :search OR
+                al.description ILIKE :search OR
+                CAST(al.entity_id AS TEXT) ILIKE :search
+            )
+        """)
+        params["search"] = f"%{search}%"
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    # Sorting
+    order = "ASC" if sort.lower() == "asc" else "DESC"
+    order_by = f"ORDER BY al.created_at {order}"
+
+    # Final reusable call
+    return paginate_query(
+        db=db,
+        select_query=select_query,
+        base_query=base_query,
+        where_clause=where_clause,
+        params=params,
+        page=page,
+        limit=limit,
+        order_by=order_by
+    )
 
 
 @app.post("/logout")

@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from services.email_service import send_registration_email
 import threading
+from utils.pagination import paginate_query
 
 from sqlalchemy import text
 
@@ -451,6 +452,66 @@ def verify_customer_signature(reference_id, image,empID, db):
         "reference_image": get_first_image(folder)
     }
 
+
+
+
+def get_all_customers_service(db, page, limit, search=None, employee_id=None, sort="desc"):
+
+    select_query = """
+        SELECT 
+            customer_id,
+            reference_id,
+            employee_id,
+            full_name,
+            email,
+            dob,
+            initial_signature_path,
+            created_at
+    """
+
+    base_query = """
+        FROM customer_signature
+    """
+
+    conditions = []
+    params = {}
+
+    # 🔍 Search (name, email, reference_id)
+    if search:
+        conditions.append("""
+            (
+                full_name ILIKE :search OR
+                email ILIKE :search OR
+                CAST(reference_id AS TEXT) ILIKE :search
+            )
+        """)
+        params["search"] = f"%{search}%"
+
+    # 👨‍💼 Filter by employee_id
+    if employee_id:
+        conditions.append("employee_id = :employee_id")
+        params["employee_id"] = employee_id
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    # 🔽 Sorting (safe handling)
+    sort = sort.lower()
+    if sort not in ["asc", "desc"]:
+        sort = "desc"
+
+    order = "ASC" if sort == "asc" else "DESC"
+    order_by = f"ORDER BY created_at {order}"
+
+    return paginate_query(
+        db=db,
+        select_query=select_query,
+        base_query=base_query,
+        where_clause=where_clause,
+        params=params,
+        page=page,
+        limit=limit,
+        order_by=order_by
+    )
 
 # CREATE SEQUENCE verification_id_seq START 1;
 

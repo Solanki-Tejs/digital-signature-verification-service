@@ -863,3 +863,21 @@ def change_password(
     db.commit()
 
     return {"message": "Password updated successfully"}
+
+
+@app.get("/get_customer")
+def get_customers(
+    pagination: dict = Depends(pagination_params),
+    search: str | None = None,
+    employee_id: int | None = None,
+    sort: str = Query("desc"),
+    db: Session = Depends(get_db)
+):
+    return get_all_customers_service(
+        db=db,
+        page=pagination["page"],
+        limit=pagination["limit"],
+        search=search,
+        employee_id=employee_id,
+        sort=sort
+    )

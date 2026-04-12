@@ -455,7 +455,15 @@ def verify_customer_signature(reference_id, image,empID, db):
 
 
 
-def get_all_customers_service(db, page, limit, search=None, employee_id=None, sort="desc"):
+def get_all_customers_service(
+    db, page, limit,
+    search=None,
+    reference_id=None,
+    email=None,
+    full_name=None,
+    employee_id=None,
+    sort="desc"
+):
 
     select_query = """
         SELECT 
@@ -476,7 +484,7 @@ def get_all_customers_service(db, page, limit, search=None, employee_id=None, so
     conditions = []
     params = {}
 
-    # 🔍 Search (name, email, reference_id)
+    # 🔍 Global search (optional)
     if search:
         conditions.append("""
             (
@@ -487,7 +495,21 @@ def get_all_customers_service(db, page, limit, search=None, employee_id=None, so
         """)
         params["search"] = f"%{search}%"
 
-    # 👨‍💼 Filter by employee_id
+    # 🎯 Specific filters (more precise)
+
+    if reference_id:
+        conditions.append("CAST(reference_id AS TEXT) ILIKE :reference_id")
+        params["reference_id"] = f"%{reference_id}%"
+
+    if email:
+        conditions.append("email ILIKE :email")
+        params["email"] = f"%{email}%"
+
+    if full_name:
+        conditions.append("full_name ILIKE :full_name")
+        params["full_name"] = f"%{full_name}%"
+
+    # 👨‍💼 Employee filter
     if employee_id:
         conditions.append("employee_id = :employee_id")
         params["employee_id"] = employee_id
@@ -502,7 +524,7 @@ def get_all_customers_service(db, page, limit, search=None, employee_id=None, so
     order = "ASC" if sort == "asc" else "DESC"
     order_by = f"ORDER BY created_at {order}"
 
-    return paginate_query(
+    result = paginate_query(
         db=db,
         select_query=select_query,
         base_query=base_query,
@@ -512,6 +534,17 @@ def get_all_customers_service(db, page, limit, search=None, employee_id=None, so
         limit=limit,
         order_by=order_by
     )
+
+    for row in result["data"]:
+        folder_path = row.get("initial_signature_path")
+
+        if folder_path:
+            try:
+                row["initial_signature_path"] = get_first_image(folder_path)
+            except Exception:
+                row["initial_signature_path"] = None
+
+    return result
 
 # CREATE SEQUENCE verification_id_seq START 1;
 

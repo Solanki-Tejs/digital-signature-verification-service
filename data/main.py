@@ -868,9 +868,20 @@ def change_password(
 @app.get("/get_customer")
 def get_customers(
     pagination: dict = Depends(pagination_params),
+
+    # 🔍 Individual filters
+    reference_id: str | None = None,
+    email: str | None = None,
+    full_name: str | None = None,
+
+    # optional global search (keep if you want)
     search: str | None = None,
+
     employee_id: int | None = None,
-    sort: str = Query("desc"),
+
+    # ⏱️ Sorting by time
+    sort: str = Query("desc", description="asc or desc based on created_at"),
+
     db: Session = Depends(get_db)
 ):
     return get_all_customers_service(
@@ -878,6 +889,9 @@ def get_customers(
         page=pagination["page"],
         limit=pagination["limit"],
         search=search,
+        reference_id=reference_id,
+        email=email,
+        full_name=full_name,
         employee_id=employee_id,
         sort=sort
     )

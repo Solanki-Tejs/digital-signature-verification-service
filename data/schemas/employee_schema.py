@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel
 
 class LoginSchema(BaseModel):
@@ -8,7 +10,7 @@ class LoginSchema(BaseModel):
 class UpdateUserSchema(BaseModel):
     name: str
     email: str
-    # password: str
+    password: Optional[str] = None
     employeeId: int
     role: str
 

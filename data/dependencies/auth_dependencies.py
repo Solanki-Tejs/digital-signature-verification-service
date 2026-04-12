@@ -5,7 +5,7 @@ from utils.jwt_token import decode_access_token
 def get_current_user(request: Request):
 
     token = request.cookies.get("access_token")
-
+    print(token)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 

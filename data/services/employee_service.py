@@ -37,7 +37,8 @@ def login_service(data, db):
 
             db.commit()
 
-            token = create_access_token(data={"email": email, "role": result["role"]})
+            token = create_access_token(data={"email": email, "role": result["role"],"employee_id":result["employee_id"]})
+            print(token)
             msg="Initial admin created"
             return token,result,msg
 
@@ -77,16 +78,17 @@ def update_user_service(data, db):
         raise HTTPException(status_code=404, detail="Employee not found")
 
     # 2. Decide password
-    # if data.password and data.password.strip() != "":
-    #     password_hash = create_password_hash(data.password)
-    # else:
-    #     password_hash = existing[0]  # keep old password
+    if data.password and data.password.strip() != "":
+        password_hash = create_password_hash(data.password)
+    else:
+        password_hash = existing[0]  # keep old password
 
     # 3. Update query
     query = text("""
         UPDATE employee
         SET full_name = :name,
             email = :email,
+            password_hash = :password,
             role = :role
         WHERE employee_id = :employeeId
         RETURNING employee_id
@@ -97,7 +99,7 @@ def update_user_service(data, db):
         {
             "name": data.name,
             "email": data.email,
-            # "password": password_hash,
+            "password": password_hash,
             "employeeId": data.employeeId,
             "role": data.role
         }

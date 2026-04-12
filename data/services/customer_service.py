@@ -7,6 +7,8 @@ import cv2
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from services.email_service import send_registration_email
+import threading
 
 from sqlalchemy import text
 
@@ -218,6 +220,15 @@ def enroll_customer_service(data, images, db):
     })
 
     db.commit()
+
+    # -------------------------------
+    # SEND EMAIL (ASYNC)
+    # -------------------------------
+
+    threading.Thread(
+        target=send_registration_email,
+        args=(data.email, data.fullName, reference_id)
+    ).start()
 
     return {
         "status": "success",

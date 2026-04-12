@@ -72,7 +72,7 @@ def get_me(user=Depends(get_current_user)):
 def login(data: LoginSchema, response: Response, db: Session = Depends(get_db)):
 
     token, result,msg = login_service(data, db)
-
+    print(token)
     response.set_cookie(
         key="access_token",
         value=token,

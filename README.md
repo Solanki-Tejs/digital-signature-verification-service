@@ -1,5 +1,10 @@
-# Digital Signature Verification Service
+<div align="center">
 
+<img src="https://github.com/user-attachments/assets/4f7b8aa7-ca9e-4049-84d2-0f935c57f737" alt="Digital Signature Verification Service" width="500"/>
+
+<h1>Digital Signature Verification Service</h1>
+
+</div>
 <div align="center">
 
 **Backend microservice for automated signature verification using deep learning**

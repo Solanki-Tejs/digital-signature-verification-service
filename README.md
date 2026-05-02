@@ -291,6 +291,13 @@ Upload Test Signature → Preprocess Image → Generate Embedding → Compare wi
 - Sync verification results when connection restored
 - Support edge computing scenarios
 
+---
+
+## 🔗 Related Repositories
+
+- **WebUI Repo**: [digital-signature-verification-webU](https://github.com/viren1023/digital-signature-verification-webU)
+
+---
 
 <div align="center">
 
